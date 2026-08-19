@@ -1,0 +1,208 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Lista de categorias válidas para validação server-side
+    function isValidCategory(cat) {
+      return cat in [
+        "Saúde",
+        "Educação",
+        "Segurança Pública",
+        "Infraestrutura e Transporte",
+        "Meio Ambiente e Agricultura",
+        "Assistência Social",
+        "Trabalho e Economia",
+        "Cultura, Esporte e Turismo",
+        "Tecnologia e Inovação",
+        "Administração e Gestão Pública",
+        "Outro ou não sei informar"
+      ];
+    }
+
+    // Valida formato de hash SHA-256: exatamente 64 caracteres hexadecimais
+    function isValidHash(hash) {
+      return hash is string && hash.matches('^[0-9a-f]{64}$');
+    }
+
+    // Valida formato de CPF mascarado: ***.***.XXX-XX (sem espaço espúrio)
+    function isValidMaskedCpf(masked) {
+      return masked is string && masked.matches('^\\*\\*\\*\\.\\*\\*\\*\\.[0-9]{3}-[0-9]{2}$');
+    }
+
+    // Valida coordenadas dentro do bounding box do Paraná (defense-in-depth server-side)
+    function isValidParanaCoords(lat, lng) {
+      return lat >= -26.72 && lat <= -22.52
+          && lng >= -54.62 && lng <= -48.05;
+    }
+
+    // Valida o schema de cada item do array de attachments
+    // Cada item deve ter: name (string ≤100), url (string https Firebase Storage), type (string), size (number)
+    function isValidAttachment(att) {
+      return att is map
+        && att.keys().hasOnly(['name', 'url', 'type', 'size'])
+        && att.keys().hasAll(['name', 'url', 'type', 'size'])
+        && att.name is string
+        && att.name.size() > 0
+        && att.name.size() <= 100
+        && att.url is string
+        // Restringe URLs aos domínios do Firebase Storage (suporta formato legado e novo)
+        && att.url.matches('^https://(firebasestorage|storage)\\.googleapis\\.com/.*')
+        && att.type is string
+        && att.type.size() > 0
+        && att.type.size() <= 50
+        // Valida que o tipo MIME é de uma whitelist segura
+        && att.type.matches('^(image/(jpeg|png|webp|gif)|video/(mp4|webm|quicktime)|application/pdf)$')
+        && att.size is number
+        && att.size > 0
+        && att.size <= 10485760; // 10MB max server-side
+    }
+
+    // Valida o array completo de attachments (máx 3 itens, cada um validado)
+    function isValidAttachments(attachments) {
+      return attachments is list
+        && attachments.size() <= 3
+        && (attachments.size() == 0 || isValidAttachment(attachments[0]))
+        && (attachments.size() <= 1 || isValidAttachment(attachments[1]))
+        && (attachments.size() <= 2 || isValidAttachment(attachments[2]));
+    }
+
+    // Campos que admins podem modificar (whitelist de campos editáveis)
+    function isValidAdminUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['status', 'adminNotes', 'category', 'attachments']);
+    }
+
+    // Valida status permitidos para atualização admin
+    function isValidStatus(status) {
+      return status in ['Nova', 'Em análise', 'Em andamento', 'Concluída', 'Rejeitada', 'Arquivada'];
+    }
+
+    // ─── Coleção de demandas ───────────────────────────────────
+    match /demands/{demandId} {
+
+      // LEITURA: requer autenticação (anônima ou Google).
+      // Bloqueia scripts que acessem Firestore diretamente sem SDK autenticado.
+      allow read: if request.auth != null;
+
+      // CRIAÇÃO: usuário autenticado + validação de schema rígida
+      allow create: if
+        request.auth != null
+
+        // Apenas os campos permitidos (impede injeção de campos extras)
+        // 'attachments' é opcional — pode estar presente como lista vazia []
+        && request.resource.data.keys().hasAll(['cpfHash', 'cpfMasked', 'category', 'description', 'location', 'status', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['cpfHash', 'cpfMasked', 'category', 'description', 'location', 'status', 'createdAt', 'attachments'])
+
+        // Validação de tipos e limites
+        && isValidHash(request.resource.data.cpfHash)
+        && isValidMaskedCpf(request.resource.data.cpfMasked)
+        && isValidCategory(request.resource.data.category)
+        && request.resource.data.description is string
+        && request.resource.data.description.size() > 0
+        && request.resource.data.description.size() <= 2000
+        // Bloqueia tags HTML na descrição (defense-in-depth contra XSS)
+        && !request.resource.data.description.matches('.*<[a-zA-Z/].*>.*')
+        && request.resource.data.location is map
+        && request.resource.data.location.keys().hasAll(['municipio', 'lat', 'lng', 'fullAddress'])
+        && request.resource.data.location.keys().hasOnly(['municipio', 'bairro', 'lat', 'lng', 'fullAddress'])
+        && request.resource.data.location.municipio is string
+        && request.resource.data.location.municipio.size() > 0
+        && request.resource.data.location.fullAddress is string
+        && request.resource.data.location.fullAddress.size() > 0
+        && (!('bairro' in request.resource.data.location) || request.resource.data.location.bairro is string)
+        && request.resource.data.location.lat is number
+        && request.resource.data.location.lng is number
+        // Validação geográfica server-side: coordenadas devem estar no Paraná
+        && isValidParanaCoords(request.resource.data.location.lat, request.resource.data.location.lng)
+        && request.resource.data.status == 'Nova'
+        && request.resource.data.createdAt == request.time
+        // Se attachments estiver presente, deve ser uma lista válida (vazia no create)
+        && (!('attachments' in request.resource.data) || isValidAttachments(request.resource.data.attachments));
+
+      // UPDATE (anônimo): permite APENAS adicionar attachments ao documento recém-criado.
+      // Nenhum outro campo pode ser alterado — garante imutabilidade dos dados originais.
+      allow update: if request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'anonymous'
+        // Só o campo 'attachments' pode mudar
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attachments'])
+        // O campo attachments anterior deve estar vazio (impede re-upload)
+        && resource.data.attachments is list
+        && resource.data.attachments.size() == 0
+        // Valida o novo array de attachments
+        && isValidAttachments(request.resource.data.attachments);
+
+      // UPDATE (admin): usuários autenticados via Google (não anônimos)
+      // Restringe quais campos um admin pode alterar (previne injeção de campos arbitrários)
+      allow update: if request.auth != null
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && isValidAdminUpdate()
+        // Se status está sendo alterado, valida contra a whitelist
+        && (!('status' in request.resource.data.diff(resource.data).affectedKeys())
+            || isValidStatus(request.resource.data.status))
+        // Se adminNotes está presente, limita tamanho
+        && (!('adminNotes' in request.resource.data)
+            || (request.resource.data.adminNotes is string && request.resource.data.adminNotes.size() <= 5000))
+        // Dados imutáveis do cidadão não podem ser alterados
+        && request.resource.data.cpfHash == resource.data.cpfHash
+        && request.resource.data.cpfMasked == resource.data.cpfMasked
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.description == resource.data.description
+        && request.resource.data.location == resource.data.location;
+
+      // DELETE (admin): apenas usuários autenticados via Google (não anônimos)
+      allow delete: if request.auth != null
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    // ─── Coleção de cidadãos (perfil demográfico) ──────────────
+    match /citizens/{citizenId} {
+
+      // LEITURA: requer autenticação (necessário para verificar perfil no login)
+      allow read: if request.auth != null;
+
+      // CRIAÇÃO: usuário autenticado + validação de schema rígida
+      // O document ID deve ser o cpfHash (64 hex chars)
+      allow create: if
+        request.auth != null
+
+        // Apenas os campos permitidos
+        && request.resource.data.keys().hasAll(['cpfHash', 'cpfMasked', 'genero', 'faixaEtaria', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['cpfHash', 'cpfMasked', 'genero', 'faixaEtaria', 'createdAt'])
+
+        // O document ID deve corresponder ao cpfHash enviado
+        && citizenId == request.resource.data.cpfHash
+
+        // Validação de tipos
+        && isValidHash(request.resource.data.cpfHash)
+        && isValidMaskedCpf(request.resource.data.cpfMasked)
+
+        // Gênero: whitelist estrita
+        && request.resource.data.genero in ['masculino', 'feminino', 'nao_informar']
+
+        // Faixa etária: whitelist estrita
+        && request.resource.data.faixaEtaria in ['16-20', '20-29', '30-39', '40-49', '50-59', '60+']
+
+        // Timestamp do servidor
+        && request.resource.data.createdAt == request.time;
+
+      // UPDATE/DELETE: bloqueado — dados imutáveis do perfil
+      allow update, delete: if false;
+    }
+
+    // ─── Coleção de administradores ────────────────────────────
+    match /admins/{adminId} {
+      // Leitura: apenas usuários autenticados não-anônimos
+      allow read: if request.auth != null
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+
+      // Escrita: bloqueada — admins são gerenciados via Firebase Console
+      allow write: if false;
+    }
+
+    // ─── Regra padrão: negar tudo que não foi explicitamente permitido ──
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

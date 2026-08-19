@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables (contém chaves sensíveis)
+.env
+.env.local
+.env.*.local
+
+# Editor / OS files
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Claude Code worktrees (temporários)
+.claude/worktrees/
+
+# Fontes comerciais (não distribuir)
+src/components/fonts/*.otf
+src/components/fonts/*.ttf
+
+# Outros
+outros/
+.agents/
+.wrangler/
+.gitignore/

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="Fala Paraná — Portal do Cidadão para registro de demandas e sugestões ao governo do estado." />
+
+  <!-- Security Headers via meta tags -->
+  <!-- Previne que o navegador infira MIME types incorretos -->
+  <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+  <!-- Impede que a página seja carregada em iframes de outros domínios (clickjacking) -->
+  <meta http-equiv="X-Frame-Options" content="DENY" />
+  <!-- Ativa proteção XSS do navegador -->
+  <meta http-equiv="X-XSS-Protection" content="1; mode=block" />
+  <!-- Política de referrer: envia origin apenas para HTTPS -->
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+  <title>Fala Paraná</title>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
+</html>

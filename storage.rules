@@ -1,0 +1,36 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ─── Uploads de anexos de demandas ────────────────────────
+    // Path obrigatório: /demands/{demandId}/{fileName}
+    // O fileName deve ser um UUID + extensão (gerado no client)
+    match /demands/{demandId}/{fileName} {
+
+      // LEITURA: qualquer usuário autenticado pode visualizar anexos
+      allow read: if request.auth != null;
+
+      // ESCRITA: apenas usuários autenticados com validação rígida
+      allow write: if request.auth != null
+
+        // Tamanho máximo por arquivo: 10MB
+        && request.resource.size <= 10 * 1024 * 1024
+
+        // Apenas MIME types permitidos (whitelist server-side com regex ancorada)
+        // O regex anterior usava alternação sem âncora, permitindo bypass.
+        && request.resource.contentType.matches(
+          '^(image/(jpeg|png|webp|gif)|video/(mp4|webm|quicktime)|application/pdf)$'
+        )
+
+        // O fileName deve ser um UUID v4 seguido de extensão permitida
+        // Previne path traversal e nomes maliciosos
+        && fileName.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|pdf)$');
+    }
+
+    // ─── Regra padrão: negar tudo que não foi explicitamente permitido ──
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
